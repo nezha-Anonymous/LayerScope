@@ -1,7 +1,7 @@
 import copy
 import threading
 import time
-import os  # 添加这行导入
+import os  
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -9,7 +9,7 @@ from torch.nn.utils.rnn import pad_sequence
 import transformers
 import threading
 from concurrent.futures import ThreadPoolExecutor
-import concurrent.futures  # 为了避免NameError，导入整个模块
+import concurrent.futures  
 
 class FiddlerQwen:
     def __init__(self, args):
@@ -22,13 +22,13 @@ class FiddlerQwen:
             use_cache=True,
             trust_remote_code=True
         )
-        self.batch_size = args.batch_size  # 添加batch_size参数   
+        self.batch_size = args.batch_size  
         if self.batch_size==4:
            self.cache=5    
         else:
            self.cache=10 
-        self.prefetch_list = {}  # 记录每层专家选择历史
-        self.prefetching_list = {}  # 记录每层专家选择历史                              
+        self.prefetch_list = {}  
+        self.prefetching_list = {}  
         self.lm_head = self.model.lm_head
         self.model = self.model.model
         self.prefil_pre=False        
@@ -51,7 +51,7 @@ class FiddlerQwen:
         self.expert_placeholder6 = copy.deepcopy(
             first_layer_mlp.experts[5]
         ).to(self.dev)        
-        self.expert_to_placeholder = {}  # 添加这行初始化字典
+        self.expert_to_placeholder = {}  
         self.expert_placeholder11_inused=False 
         self.expert_placeholder22_inused=False 
         self.expert_placeholder33_inused=False   
@@ -75,21 +75,21 @@ class FiddlerQwen:
         self.n_layer = len(self.model.layers)
         self.n_expert = len(self.model.layers[0].mlp.experts)
 
-        self.expert_selection_stats = []  # 记录专家选择情况
-        self.expert_time_stats = []       # 记录专家处理时间
+        self.expert_selection_stats = []  
+        self.expert_time_stats = []       
 
-        self.expert_selection_history = {}  # 记录每层专家选择历史
-        self.hit_stats = {}  # 记录命中统计
+        self.expert_selection_history = {}  
+        self.hit_stats = {}  
         for i in range(self.n_layer):
             self.expert_selection_history[i] = []
             self.hit_stats[i] = {'hits': 0, 'total': 0}
-            #yed
-        self.expert_weight_accumulator = {}  # 记录每层专家的累计权重
+            
+        self.expert_weight_accumulator = {}  
         for i in range(self.n_layer):
             self.expert_weight_accumulator[i] = torch.zeros(128, device=self.dev)  
-        #yed
+        
         self.cpu_expert_time_per_layer = {i: 0.0 for i in range(self.n_layer)}
-        # TODO: find this value based on device config
+        
         self.latency_cpu = 5
         self.latency_gpu = 45
 
@@ -98,7 +98,7 @@ class FiddlerQwen:
 
         self.bring_non_expert_to_gpu()
 
-        # 0: CPU, 1: GPU
+        
         self.expert_loc = np.zeros((self.n_layer, self.n_expert), dtype=int)
         self.expert_loc_now = np.zeros((self.n_layer, self.n_expert), dtype=int)
         n_expert_on_gpu = self.calc_n_expert_on_gpu()
@@ -107,17 +107,17 @@ class FiddlerQwen:
         )
 
         self.set_expert_loc(n_expert_on_gpu)
-        # print(self.expert_loc)
-        self.layer_time_stats = []  # 记录每层处理时间
-        self.layer_time_accumulator = {}  # 记录每层累计时间
+        
+        self.layer_time_stats = []  
+        self.layer_time_accumulator = {}  
         for i in range(self.n_layer):
             self.layer_time_accumulator[i] = 0.0
         self.layer_time_details = {
-            'all_gpu': [],    # 两个专家都在GPU
-            'all_cpu': [],    # 两个专家都在CPU
-            'mixed': []       # 一个GPU一个CPU
+            'all_gpu': [],    
+            'all_cpu': [],    
+            'mixed': []       
         }
-        #基于历史预测
+        
         self.layer_time_accumulator_details = {
             'all_gpu': {i: 0.0 for i in range(self.n_layer)},
             'all_cpu': {i: 0.0 for i in range(self.n_layer)},
@@ -132,12 +132,12 @@ class FiddlerQwen:
             for i in range(self.n_layer)
         }
 
-        self.layer_data = {}  # 用于存储收集的数据
-        # self._register_data_collection_hooks()  # 注册数据收集钩子
+        self.layer_data = {}  
+        
 
         tick = time.time()        
         self.bring_expert_to_gpu()
-        print(f"专家 移动总耗时: {(time.time() - tick)*1000:.2f}ms")
+        
         print("Model is ready.")
 
 
@@ -152,40 +152,40 @@ class FiddlerQwen:
             self.model.layers[i].input_layernorm.to(self.dev)
             self.model.layers[i].mlp.gate.to(self.dev)
             self.model.layers[i].post_attention_layernorm.to(self.dev)
-            # only model.layers[i].mlp.experts is on CPU
+            
 
     def get_hot_expert(self):
-        """获取每层热点专家(按处理token数量排序)"""
+        
         if not hasattr(self, 'is_decode') or not self.is_decode:
             return {}
         
         hot_experts = {}
         
         for layer_id in range(self.n_layer):
-            # 获取当前层的专家统计
+            
             expert_ids = self.current_iter_expert_stats[layer_id]['expert_ids']
             token_counts = self.current_iter_expert_stats[layer_id]['token_counts']
             
-            # 合并专家ID和token数量
+            
             expert_data = list(zip(expert_ids, token_counts))
             
-            # 按token数量降序排序
+            
             sorted_experts = sorted(expert_data, key=lambda x: x[1], reverse=True)
             
-            # 提取排序后的专家ID
+            
             hot_experts[layer_id] = [expert[0] for expert in sorted_experts]
             
-            # 更新last_iter记录
+            
             self.last_iter_expert_stats[layer_id] = {
                 'expert_ids': expert_ids.copy(),
                 'token_counts': token_counts.copy()
             }
             
-            # 清空当前迭代记录
+            
             self.current_iter_expert_stats[layer_id]['expert_ids'].clear()
             self.current_iter_expert_stats[layer_id]['token_counts'].clear()
         
-        # 保存到成员变量
+        
         self.hot_experts = hot_experts
         return hot_experts
     def set_expert_loc(self, n_expert_on_gpu, popular_experts=None):
@@ -202,8 +202,8 @@ class FiddlerQwen:
                     print(f"Error loading hot experts: {e}")
             else:
                 popular_experts = []
-                for layer in range(self.n_layer):  # 1-27层
-                    for expert in range(60):  # 每层前60个专家
+                for layer in range(self.n_layer):  
+                    for expert in range(60):  
                         popular_experts.append((layer, expert))
         n_expert_on_gpu = min(n_expert_on_gpu, len(popular_experts))
         for i in range(n_expert_on_gpu):
@@ -212,11 +212,11 @@ class FiddlerQwen:
     def _async_ondemand(self, layer_idx, expert_id, target_placeholder):
         expert = self.model.layers[layer_idx].mlp.experts[expert_id]
     
-        # 如果专家已经在GPU上，直接返回
+        
         if next(expert.parameters()).is_cuda:
             return 
         
-        # 创建CUDA流用于并行传输
+        
         for name in ['gate_proj', 'up_proj', 'down_proj']:
             w = getattr(self.model.layers[layer_idx].mlp.experts[expert_id], name)
             src_weight_data_tensor = w.weight.data 
@@ -230,16 +230,16 @@ class FiddlerQwen:
             dst.copy_(src)
             
         copytime = time.time() - tick
-        print(f"ondemand专家: 层 {layer_idx} 专家 {expert_id} -> {copytime*1000:.2f}ms")
+        
 
     def _async_load_expert(self, layer_idx, expert_id):
 
         expert = self.model.layers[layer_idx].mlp.experts[expert_id]
     
-        # 如果专家已经在GPU上，直接返回
+        
         if next(expert.parameters()).is_cuda:
             return 
-        # 创建CUDA流用于并行传输
+        
         for name in ['gate_proj', 'up_proj', 'down_proj']:
             w = getattr(self.model.layers[layer_idx].mlp.experts[expert_id], name)
             src_weight_data_tensor = w.weight.data 
@@ -270,91 +270,91 @@ class FiddlerQwen:
         elif target_placeholder == self.expert_placeholder4:
             self.placeholder_to_expert['expert_placeholder4'] = (layer_idx, expert_id)         
 
-        # torch.cuda.synchronize()
+        
         tick = time.time()
         for name in ['gate_proj', 'up_proj', 'down_proj']:
             dst = getattr(target_placeholder, name).weight.data
             src = getattr(self.model.layers[layer_idx].mlp.experts[expert_id], name).weight.data
             dst.copy_(src)
         copytime=time.time() - tick
-        print(f"预取专家: 层 {layer_idx} 专家 {expert_id} -> {copytime*1000:.2f}ms")
-        # 记录专家到占位专家的映射，以便后续使用
-        # self.expert_to_placeholder[(layer_idx, expert_id)] = target_placeholder        
+        
+        
+        
     def release_placeholder(self, layer_idx, expert_id):
         for placeholder_name in ['expert_placeholder', 'expert_placeholder2',
                               'expert_placeholder3', 'expert_placeholder4']:
             stored_expert = self.placeholder_to_expert[placeholder_name]
             if stored_expert and (stored_expert[0] < layer_idx or 
                     (stored_expert[0] == self.n_layer - 1 and layer_idx <= 1)):
-                # 释放占位专家
+                
                 setattr(self, f"{placeholder_name}_inused", False)
                 self.placeholder_to_expert[placeholder_name] = None
-                # self.expert_loc_now[stored_expert[0],  expert_id] = 0
+                
 
     def bring_expert_to_gpu(self):
         """Bring part of expert layers to GPU"""
         expert_count = 0
-        try:
-            for i in range(self.n_layer):
-                for j in range(self.n_expert):
-                    if self.is_expert_in_gpu(i, j):
-                        self.model.layers[i].mlp.experts[j].to(self.dev)
-                        expert_count += 1
+        
+        for i in range(self.n_layer):
+            for j in range(self.n_expert):
+                if self.is_expert_in_gpu(i, j):
+                    self.model.layers[i].mlp.experts[j].to(self.dev)
+                    expert_count += 1
                         
-            # 记录成功加载的专家数量
-            with open('test.txt', 'a') as f:
-                f.write(f"模型: Qwen, batch_size: {self.batch_size}, 成功加载专家数量: {expert_count}\n")
+            
+            
+            
                 
-        except RuntimeError as e:
-            if 'out of memory' in str(e).lower():
-                # 记录显存溢出时的专家数量
-                with open('test.txt', 'a') as f:
-                    f.write(f"模型: Qwen, batch_size: {self.batch_size}, 显存溢出时专家数量: {expert_count}\n")
-                raise  # 重新抛出异常
-            else:
-                raise  # 其他异常直接抛出
+        
+        
+                
+        
+        
+        
+        
+        
 
     def is_expert_in_gpu(self, i_layer, i_expert):
         """Determine if the expert is in GPU"""
         return self.expert_loc[i_layer, i_expert] == 1
     def is_expert_in_gpu_now(self, i_layer, i_expert):
-        """检查专家当前是否实际在GPU上（包括占位专家）"""
-        # 检查专家是否在占位专家中
-        # for placeholder_name in ['expert_placeholder', 'expert_placeholder2',
-        #                       'expert_placeholder3', 'expert_placeholder4']:
-        #     stored_expert = self.placeholder_to_expert[placeholder_name]
-        #     if stored_expert and stored_expert == (i_layer, i_expert):
-        #         return True
+        
+        
+        
+        
+        
+        
+        
                 
-        # 直接检查专家参数是否在GPU上
+        
         return self.expert_loc[i_layer, i_expert] == 1
 
 
     def calc_n_expert_on_gpu(self):
         """Get the number of experts that we can put on GPU"""
-        # get the number of parameters of one expert
+        
         n_param = sum(
             p.numel()
             for p in self.model.layers[0].mlp.experts[0].parameters()
         )
         print(f"Number of parameters in a single expert: {n_param}")
-        # get the amount of free memory on GPU
+        
         total_mem = torch.cuda.get_device_properties(self.dev).total_memory
-        free_mem = total_mem * 0.95 - torch.cuda.memory_allocated(self.dev) # TODO: magic number
+        free_mem = total_mem * 0.95 - torch.cuda.memory_allocated(self.dev) 
         if self.batch_size==64:
-            return int((free_mem) // (n_param * 2)-900)# 900 _
+            return int((free_mem) // (n_param * 2)-900)
         elif self.batch_size==32:
             return int((free_mem) // (n_param * 2)-600)
         elif self.batch_size==16:
             return int((free_mem) // (n_param * 2)-600)
         elif self.batch_size==8:
-            return int((free_mem) // (n_param * 2)-400)     #2697                  
+            return int((free_mem) // (n_param * 2)-400)     
         else:
-            return int((free_mem) // (n_param * 2)-300)#2187
+            return int((free_mem) // (n_param * 2)-300)
 
 
     def initial_beam_tensor(self, input_tensor):
-        # transpose tensor of shape (beam_width, seq_len, beam_width) to (beam_width, 1) properly
+        
         assert input_tensor.shape[-1] == self.beam_width
         input_tensor = input_tensor[:, -1]
         row_idx = torch.tensor(
@@ -364,7 +364,7 @@ class FiddlerQwen:
         return output_tensor
 
     def generate(self, text=None, output_token=20, input_token=None):
-        torch.set_num_threads(16) # TODO: set appropriately
+        torch.set_num_threads(16) 
         self.past_key_value = transformers.cache_utils.DynamicCache.from_legacy_cache()
         self.past_key_values_length = 0
 
@@ -377,14 +377,14 @@ class FiddlerQwen:
             text = ["default input"] * self.batch_size
         elif isinstance(text, str):
             text = [text] * self.batch_size
-        # if input_token is not None:
-        #     text = [t.split()[:input_token] for t in text]  # 按单词截断
-        #     text = [' '.join(t) for t in text]  # 重新组合为字符串             
-        # print("txet:", text)
+        
+        
+        
+        
         input_ids, position_ids, attention_mask = self.tokenize(text,input_token)
-        # print("inputids:", input_ids)
+        
         if input_token is not None:
-            # 对每个样本独立截取前input_token个token
+            
             input_ids = torch.stack([
                 ids[:input_token] if len(ids) > input_token else ids 
                 for ids in input_ids
@@ -393,9 +393,9 @@ class FiddlerQwen:
                 pos[:input_token] if len(pos) > input_token else pos
                 for pos in position_ids
             ])
-            # attention_mask需要保持与input_ids相同的形状
+            
             attention_mask = attention_mask[:, :, :, :input_token]
-        # print("inputids2:", input_ids)
+        
         tick = time.time()
         self.is_decode = False
         prefill_time, decode_time = 0, 0
@@ -417,10 +417,10 @@ class FiddlerQwen:
                 torch.profiler.ProfilerActivity.CUDA
             ],
             schedule=torch.profiler.schedule(
-                wait=1,  # 跳过前1次迭代
-                warmup=3,  # 预热1次迭代
-                active=1,  # 记录3次迭代
-                repeat=1  # 只执行1轮
+                wait=1,  
+                warmup=3,  
+                active=1,  
+                repeat=1  
             ),
             on_trace_ready=torch.profiler.tensorboard_trace_handler('./log'),
             record_shapes=True,
@@ -428,30 +428,30 @@ class FiddlerQwen:
             with_stack=True
         )
         
-        # prof.start()
+        
 
         for i_token in range(output_token):
-            # prof.step()
-            token_start_time = time.time()  # 记录单个token开始时间            
-            # if self.beam_width == 1:
-                # print(self.tokenizer.decode(input_ids[0]))
-                # TODO: streaming output for beam search
+            
+            token_start_time = time.time()  
+            
+                
+                
             if self.is_decode:
                 for i in range(input_ids.shape[0]):
                     decode_strings[i] += " " + self.tokenizer.decode(input_ids[i, :])
-            # new_mask = torch.ones((attention_mask.shape[0], 1), dtype=torch.bool, device=self.dev)
-            # attention_mask = torch.cat([attention_mask, new_mask], dim=1)     
-            #        
+            
+            
+            
             if self.is_decode:
-                # 创建新的mask (batch, num_heads, 1, 1)
+                
                 new_mask = torch.ones(
                     (attention_mask.shape[0], attention_mask.shape[1], 1, 1),
                     dtype=torch.bool,
                     device=self.dev
                 )
-                # 拼接在序列维度
+                
                 attention_mask = torch.cat([attention_mask, new_mask], dim=-1)
-            # print("attention_mask shape3:", attention_mask.shape)
+            
             new_position_ids = torch.arange(
                 self.past_key_values_length,
                 self.past_key_values_length + input_ids.shape[1],
@@ -461,15 +461,15 @@ class FiddlerQwen:
             logits = self.mixtral_forward(input_ids, new_position_ids, attention_mask )
 
             logits = logits.to("cpu")
-            # logits.shape: (batch_size, seq_len, vocab_size)
+            
 
-            # normalize logits
+            
             logits = F.softmax(logits, dim=-1)
 
-            # greedy search:
-            # output = torch.argmax(logits, dim=-1)
+            
+            
 
-            # beam_search:
+            
             self.past_key_values_length += logits.shape[1]
             if search_start:
                 new_probs, output = torch.topk(logits, 1, dim=-1)
@@ -479,11 +479,11 @@ class FiddlerQwen:
                 new_probs = self.initial_beam_tensor(new_probs)
                 output = self.initial_beam_tensor(output)
                 search_start = True
-            # new_probs = new_probs / new_probs.sum(dim=-1, keepdim=True)
+            
             probs = probs * new_probs
 
             input_ids = output[:, -1].flatten().view(-1, 1).to(self.dev)
-            # input_ids.shape: (batch_size, seq_len=1)
+            
 
             position_ids = (
                 torch.arange(
@@ -497,9 +497,9 @@ class FiddlerQwen:
             )
             token_time = time.time() - token_start_time
             self.token_decode_times.append(token_time)
-            # print(f"Token {i_token} decode time: {token_time*1000:.2f}ms")
             
-            # position_ids.shape: (1, 1)
+            
+            
             if not self.is_decode:
                 prefill_time += time.time() - tick
                 tick = time.time()
@@ -508,16 +508,16 @@ class FiddlerQwen:
         probs = probs.view(-1, self.beam_width)
         max_ids = torch.argmax(probs, dim=-1)
 
-        # print("\nToken decode time summary:")
-        # for i, t in enumerate(self.token_decode_times):
-        #     print(f"Token {i}: {t*1000:.2f}ms")
-        # print(f"Total decode time: {decode_time*1000:.2f}ms")
-        # print(f"Average per token: {decode_time*1000/len(self.token_decode_times):.2f}ms")
-        # print("--------------------")
+        
+        
+        
+        
+        
+        
        
-        # print(f"Input: {text}")
-        # print(f"Output: {decode_strings[max_ids[0]]}")
-        # prof.stop()
+        
+        
+        
         return (
             prefill_time,
             decode_time,
@@ -527,8 +527,8 @@ class FiddlerQwen:
                 'expert_selection': self.expert_selection_stats,
                 'expert_time': self.expert_time_stats,
                 'layer_time': self.layer_time_stats,
-                'outputs': decode_strings,  # 添加输出文本
-                # 'layer_time_details': self.layer_time_details,  # 添加细粒度时间统计
+                'outputs': decode_strings,  
+                
                 'expert_hot_stats': self.get_expert_stats()
 
             }
@@ -538,8 +538,8 @@ class FiddlerQwen:
             text = [text]
         elif not isinstance(text, list):
             raise ValueError("text should be str or list of str")
-        print(f"输出input_token: {input_token}...\n")    
-        # 确保文本数量与batch_size匹配
+        
+        
         if len(text) < self.batch_size:
             text = text + [text[-1]] * (self.batch_size - len(text))
         elif len(text) > self.batch_size:
@@ -554,23 +554,23 @@ class FiddlerQwen:
         )
         input_ids = encodings.input_ids.to(self.dev)
         attention_mask = encodings.attention_mask.bool().to(self.dev)
-        # print(f"输出id: {input_ids}...\n")            
-        # 扩展为 (batch_size * beam_width, seq_len)
-        # input_ids = input_ids.repeat_interleave(self.beam_width, dim=0)
-        # attention_mask = attention_mask.repeat_interleave(self.beam_width, dim=0)
         
-        # 生成 position_ids
+        
+        
+        
+        
+        
         seq_length = input_ids.shape[1]
         position_ids = torch.arange(
             seq_length, dtype=torch.long, device=self.dev
         ).unsqueeze(0).expand(input_ids.shape[0], -1)
 
-        # 修正attention_mask形状为4D (batch, num_heads, seq_len, seq_len)
-        # 注意：这里需要根据模型的实际头数(32)来扩展
+        
+        
         if attention_mask.dim() == 2:
-            # 从(batch, seq_len)扩展到(batch, 1, 1, seq_len)
+            
             attention_mask = attention_mask.unsqueeze(1).unsqueeze(1)
-            # 然后扩展到(batch, num_heads, seq_len, seq_len)
+            
             attention_mask = attention_mask.expand(-1, 32, -1, -1)
         
         return input_ids, position_ids, attention_mask
@@ -579,24 +579,24 @@ class FiddlerQwen:
     def mixtral_forward(self, input_ids, position_ids, attention_mask ):
         hidden_dim = self.model.config.hidden_size
         tick = time.time()
-        # print(f"inpsid: {input_ids}ms")        
+        
         inps = self.model.embed_tokens(input_ids)
         self.perf_stats['token_embedding'].append(time.time() - tick)
-        # print(f"inps: {inps}ms")
+        
         if self.is_decode:
             total_decode_start = time.time()
             layer_times = {i: 0.0 for i in range(self.n_layer)}
             layer_times_fwd = {i: 0.0 for i in range(self.n_layer)}        
             layer_times_mid = {i: 0.0 for i in range(self.n_layer)}       
             layer_times_final = {i: 0.0 for i in range(self.n_layer)}                  
-        # position_embeddings = self.model.embed_positions(position_ids)
+        
         position_embeddings = self.model.rotary_emb(inps, position_ids)
-        #待注销
+        
         batch_size = input_ids.shape[0]
         seq_len = input_ids.shape[1]
-        # 确保attention_mask形状正确
-        # if attention_mask.dim() == 2:
-        #     attention_mask = attention_mask.unsqueeze(1)  # (batch, 1, seq_len)
+        
+        
+        
         layer_start_time = time.time()        
         layer_total_time = 0.0
         isprefetch=False
@@ -604,9 +604,9 @@ class FiddlerQwen:
         for i_layer, layer in enumerate(self.model.layers):
             layer_tick = time.time()            
 
-            # self.release_placeholder(i_layer, 0)
-            # print(f"is: {self.is_decode},layer: {i_layer}...pre: {self.prefetch_layers}\n")   
-            laymid = time.time() - layer_tick             #          
+            
+            
+            laymid = time.time() - layer_tick             
 
 
 
@@ -614,48 +614,48 @@ class FiddlerQwen:
             self.cpu_expert_time_per_layer[i_layer] =0
             inps_residual = inps
             inps = layer.input_layernorm(inps)
-            # position_embeddings = self.model.embed_positions(position_ids)
             
-            # 调用自注意力层时传递位置嵌入
-            # inps, self_attn_weights, present_key_value = layer.self_attn(
-            #     hidden_states=inps,
-            #     attention_mask=attention_mask,
-            #     position_embeddings=position_embeddings,  # 传递嵌入后的位置信息
-            #     past_key_value=self.past_key_value,
-            #     use_cache=True,
-            # )
+            
+            
+            
+            
+            
+            
+            
+            
+            
          
             inps = inps.view(batch_size, seq_len, hidden_dim)            
             tick = time.time()
             attn_output = layer.self_attn(
                 hidden_states=inps,
                 attention_mask=attention_mask,
-                position_embeddings=position_embeddings,  # 传递嵌入后的位置信息
+                position_embeddings=position_embeddings,  
                 past_key_value=self.past_key_value,
                 use_cache=True,
             )
-            #      data collection
+            
 
-            torch.cuda.synchronize()  # 确保当前操作完成
+            torch.cuda.synchronize()  
             self.perf_stats['self_attention'].append(time.time() - tick)
-            # print(f"输出attn_outputtime: {time.time() - tick}...\n")
-            # 根据返回类型处理结果
+            
+            
             if isinstance(attn_output, tuple):
-                if len(attn_output) == 2:  # 只有attn_output和present_key_value
+                if len(attn_output) == 2:  
                     inps, present_key_value = attn_output
                     self_attn_weights = None
-                else:  # 3个返回值
+                else:  
                     inps, self_attn_weights, present_key_value = attn_output
-            else:  # 只有attn_output
+            else:  
                 inps = attn_output
                 self_attn_weights = None
                 present_key_value = None
-            # inps.shape: (batch_size, seq_len/token_num, embed_dim)
+            
             inps = inps_residual + inps
             inps_residual = inps
             inps = layer.post_attention_layernorm(inps)
             inps = inps.view(-1, hidden_dim)
-            # inps.shape: (batch_size*seq_len*embed_dim/hidden_dim, hidden_dim)
+            
             layer_idx=i_layer
             if layer_idx not in self.layer_data:
                 self.layer_data[layer_idx] = {
@@ -663,22 +663,22 @@ class FiddlerQwen:
                     "expert_indices": []
                 }
             
-            # 获取专家处理前的hidden states
+            
             pre_expert_hidden_states = inps.view(batch_size, seq_len, -1)
-            #data collection
+            
             tick = time.time()
             router_logits = layer.mlp.gate(inps)
-            torch.cuda.synchronize()  # 确保当前操作完成
+            torch.cuda.synchronize()  
             self.perf_stats['moe_gating'].append(time.time() - tick)
 
             routing_weights = F.softmax(router_logits, dim=1)
-            # routing_weights.shape: (batch_size*seq_len, num_experts)
-            #printtop8ep   yed
+            
+            
 
             routing_weights, selected_experts = torch.topk(routing_weights, 8, dim=-1)
 
             routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
-            # intermediate variable to store the output of experts
+            
             inps_after_experts = torch.zeros_like(inps, device=self.dev)
             experts = layer.mlp.experts
             expert_token_counts = {}
@@ -686,52 +686,52 @@ class FiddlerQwen:
                 mask = (selected_experts == expert_id).any(dim=1)
                 expert_token_counts[expert_id.item()] = mask.sum().item()
             
-            # 按token数量降序排序专家
+            
             sorted_experts = sorted(
                 expert_token_counts.items(), 
                 key=lambda x: x[1], 
                 reverse=True
             )            
-            # 保存到当前层的专家统计中
+            
             self.current_iter_expert_stats[i_layer] = {
-                'expert_ids': [e[0] for e in sorted_experts],  # 专家ID
-                'token_counts': [e[1] for e in sorted_experts]  # 对应token数量
+                'expert_ids': [e[0] for e in sorted_experts],  
+                'token_counts': [e[1] for e in sorted_experts]  
             }
             layer_i_stats = self.current_iter_expert_stats[i_layer]
-            for expert_id, token_count in zip(layer_i_stats['expert_ids'], layer_i_stats['token_counts']):
-                print(f"专家 {expert_id} 处理了 {token_count} 个token")
+            
+                
             filtered_expert_ids = []
             filtered_token_counts = []
             for expert_id, token_count in zip(layer_i_stats['expert_ids'], layer_i_stats['token_counts']):
-                # 检查专家是否已经在GPU上
+                
                 expert_in_gpu = False
                 if self.is_expert_in_gpu_now(i_layer, expert_id):
                     expert_in_gpu = True
                 elif (i_layer in self.prefetch_list and expert_id in self.prefetch_list[i_layer]) or \
                     (i_layer in self.prefetching_list and expert_id in self.prefetching_list[i_layer]):
                     expert_in_gpu = True
-                # else:
-                #     # 检查是否在占位专家中
-                #     for placeholder_name in ['expert_placeholder', 'expert_placeholder2']:
-                #         stored_expert = self.placeholder_to_expert[placeholder_name]
-                #         if stored_expert and stored_expert == (i_layer, expert_id):
-                #             expert_in_gpu = True
-                #             break
+                
+                
+                
+                
+                
+                
+                
                 
                 if not expert_in_gpu:
                     filtered_expert_ids.append(expert_id)
                     filtered_token_counts.append(token_count)
             
-            # 直接使用过滤后的结果，不需要再次排序
+            
             sorted_experts = list(zip(filtered_expert_ids, filtered_token_counts))
                 
-            # 初始化变量
-            e = 0.55   # 搬运开销(m秒) batch 8 
-            tg = 0.85   # GPU计算开销(m秒)
+            
+            e = 0.55   
+            tg = 0.85   
             n = len(sorted_experts)
             ondemand_experts = []
-            # if self.is_decode:
-            # 计算CPU时间表(假设linshi.txt中的时间是毫秒)
+            
+            
             cpu_time_table = [float(line.strip())  for line in open('microqwen.txt')]
             tic=time.time()
             TA = sum(cpu_time_table[min(tokens, 1498)] for expert_id, tokens in sorted_experts[0:n])
@@ -739,18 +739,18 @@ class FiddlerQwen:
             experts_in_placeholder = []            
             for i in range(n-1):
                 expert_id, token_count = sorted_experts[i]                
-                # 计算TG和TC
+                
                 print("e,t,n,i",expert_id, token_count,n,i)
                 TG = (1 + i) * e + tg
                 print("tg",TG)
                 TC = TC-cpu_time_table[min(token_count, 1498)]                    
                 print("cpu_time_totl[tokens]",TC)                
-                # 判断是否需要ondemand
+                
                 if self.is_decode:
                     if TG < TC:
                         if token_count>1:
                             ondemand_experts.append(expert_id)
-                            print("执行了")
+                            
                         else:
                             experts_in_placeholder.append(expert_id)
                         if i==n-2:
@@ -760,28 +760,28 @@ class FiddlerQwen:
                             elif TC-TG>e/2:
                                 self.prefil_pre=True                        
                     else:
-                        # 不满足条件，停止检查后续专家
-                        print("跳出了")
+                        
+                        
                         break
                 else:
                     if TG < TC+cpu_time_table[min(token_count, 1498)]:
                         ondemand_experts.append(expert_id)
-                        print("执行了")
+                        
                     else:
-                        # 不满足条件，停止检查后续专家
-                        print("跳出了")
+                        
+                        
                         break        
             print(f"time: {(time.time() - tic)*1000:.2f}ms")
-            # 处理需要ondemand的专家
-            for expert_id in ondemand_experts:
-                # 这里添加实际的ondemand处理逻辑
-                print(f"专家 {expert_id} 被标记为ondemand处理")                
+            
+            
+                
+            
 
-            if i_layer < self.n_layer - 1:  # 如果不是最后一层
+            if i_layer < self.n_layer - 1:  
                 next_layer = self.model.layers[i_layer + 1]
-                # 使用当前层输出预测下一层专家
+                
                 with torch.no_grad():
-                    next_router_logits = next_layer.mlp.gate(inps)  # Moon模型使用mlp.gate
+                    next_router_logits = next_layer.mlp.gate(inps)  
                     next_routing_weights = F.softmax(next_router_logits, dim=1)
                     _, next_predicted_experts = torch.topk(next_routing_weights, 8, dim=-1) 
 
@@ -789,59 +789,59 @@ class FiddlerQwen:
                 for batch_idx in range(batch_size * seq_len):
                     for expert in next_predicted_experts[batch_idx]:
                         expert_token_counts[expert.item()] = expert_token_counts.get(expert.item(), 0) + 1        
-                # 按token处理量排序，获取前三热点专家
+                
                 sorted_experts = sorted(expert_token_counts.items(), key=lambda x: x[1], reverse=True)
 
                 top3_experts = [expert[0] for expert in sorted_experts[:self.cache]]   
-                # linshi_hot=[]                             
-                # linshi_hot= top3_experts
-                # print(f"层 {i_layer + 1} 热点 {self.hot_experts[i_layer + 1]} ")
+                
+                
+                
                 self.hot_experts[i_layer + 1] = []
                 for expert_id in top3_experts:
                     token_count = expert_token_counts[expert_id]
                     if self.batch_size==4:
                         if token_count >= 3 and not self.is_expert_in_gpu_now(i_layer + 1, expert_id) and i_layer + 1<len(self.model.layers):
-                            print(f"层 {i_layer + 1} 专家 {expert_id} 需要预取 (token数量: {token_count})")
-                            # if i_layer + 1 not in self.hot_experts and i_layer + 1<len(self.model.layers):
-                            #     self.hot_experts[i_layer + 1] = []
+                            
+                            
+                            
                             self.hot_experts[i_layer + 1].append(expert_id)
                         elif len([e for e in top3_experts if expert_token_counts.get(e, 0) >= 2 and 
                                 not self.is_expert_in_gpu_now(i_layer + 1, e)]) >= 3:
-                            print(f"层 {i_layer + 1} 专家 {expert_id} 需要预取 (多热点专家情况)")
+                            
                             self.hot_experts[i_layer + 1].append(expert_id)
                     elif self.batch_size==8:
                         if token_count >= 4 and not self.is_expert_in_gpu_now(i_layer + 1, expert_id) and i_layer + 1<len(self.model.layers):
-                            print(f"层 {i_layer + 1} 专家 {expert_id} 需要预取 (token数量: {token_count})")
-                            # if i_layer + 1 not in self.hot_experts and i_layer + 1<len(self.model.layers):
-                            #     self.hot_experts[i_layer + 1] = []
+                            
+                            
+                            
                             self.hot_experts[i_layer + 1].append(expert_id)
                         elif len([e for e in top3_experts if expert_token_counts.get(e, 0) >= 3 and 
                                 not self.is_expert_in_gpu_now(i_layer + 1, e)]) >= 3:
-                            print(f"层 {i_layer + 1} 专家 {expert_id} 需要预取 (多热点专家情况)")
+                            
                             self.hot_experts[i_layer + 1].append(expert_id)                            
                     else:
                         if token_count >= 4 and not self.is_expert_in_gpu_now(i_layer + 1, expert_id) and i_layer + 1<len(self.model.layers):
-                            print(f"层 {i_layer + 1} 专家 {expert_id} 需要预取 (token数量: {token_count})")
-                            # if i_layer + 1 not in self.hot_experts and i_layer + 1<len(self.model.layers):
-                            #     self.hot_experts[i_layer + 1] = []
+                            
+                            
+                            
                             self.hot_experts[i_layer + 1].append(expert_id)
                         elif len([e for e in top3_experts if expert_token_counts.get(e, 0) >= 3 and 
                                 not self.is_expert_in_gpu_now(i_layer + 1, e)]) >= 3:
-                            print(f"层 {i_layer + 1} 专家 {expert_id} 需要预取 (多热点专家情况)")
+                            
                             self.hot_experts[i_layer + 1].append(expert_id)  
 
 
             if self.cpu_offload == 0:
-                # baseline: do everything at GPU
+                
                 print("oo")
 
             else:
-                # prefill stage with offloading
+                
                 expert_mask = torch.nn.functional.one_hot(
                     selected_experts, num_classes=self.n_expert
                 ).permute(2, 1, 0)
 
-                # first, calculate the number of tokens for each expert
+                
                 cpu_experts = []
                 gpu_experts = []
                 experts_in_gpu = []
@@ -850,27 +850,27 @@ class FiddlerQwen:
                 experts_remaining = []
                 experts_remaining2 = []  
                 experts_remaining3 = []              
-                            #for prefil
+                            
                 selected_expert_ids = selected_experts.unique().tolist()
 
                 if self.is_decode:
                     laymid = time.time() - layer_tick
                     laypid = time.time()
-                # 定义收集处理结果的容器
-                # 定义收集处理结果的容器
-                gpu_results = []  # 元素为 (mask_index, expert_output)
+                
+                
+                gpu_results = []  
                 cpu_results = []
                 gpu_time = 0.0
                 cpu_time = 0.0
                 self._prefetch_thread_started=False
                 for i_expert in selected_expert_ids:
-                    # 检查专家是否在GPU上
+                    
                     if self.is_expert_in_gpu_now(i_layer, i_expert):
                         gpu_experts.append(i_expert)
                         experts_in_gpu.append(i_expert)
                         continue
                         
-                    # 检查占位专家是否存储了当前层的专家
+                    
 
                     if i_layer not in self.prefetch_list:
                         self.prefetch_list[i_layer] = []
@@ -891,9 +891,9 @@ class FiddlerQwen:
                 if self.is_decode:
                     laymid = time.time() - layer_tick
                     laypid = time.time()
-                # 定义收集处理结果的容器
-                # 定义收集处理结果的容器
-                gpu_results = []  # 元素为 (mask_index, expert_output)
+                
+                
+                gpu_results = []  
                 cpu_results = []
                 gpu_time = 0.0
                 cpu_time = 0.0
@@ -928,7 +928,7 @@ class FiddlerQwen:
                                 results.append((mask_index, expert_output))
                                 self.perf_stats['expert_compute'].append(compute_time)
                         
-                        # 为每个专家创建线程
+                        
                         for i_expert in experts_in_gpu:
                             t = threading.Thread(
                                 target=process_single_expert,
@@ -937,7 +937,7 @@ class FiddlerQwen:
                             threads.append(t)
                             t.start()
                         
-                        # 等待所有线程完成
+                        
                         for t in threads:
                             t.join()
                             
@@ -954,7 +954,7 @@ class FiddlerQwen:
                             tick = time.time()
                             expert_output = self.run_expert_at_gpu(1, 9, expert_input)
                             self.perf_stats['expert_compute'].append(time.time() - tick)
-                            print(f"专家占位2(使用代理专家): {(time.time() - tick)*1000:.2f}ms")
+                            
                             weights = routing_weights[mask].gather(
                                 1, (selected_experts[mask] == i_expert).long().argmax(dim=1, keepdim=True)
                             )
@@ -970,14 +970,14 @@ class FiddlerQwen:
                             if not mask.any():
                                 continue
                             print("333")                                
-                            # 等待加载完成
-                            # while self.is_expert_loaded(i_layer, expert_id):
-                            #     time.sleep(0.001)
+                            
+                            
+                            
                             expert_input = inps[mask]
                             tick = time.time()
                             expert_output = self.run_expert_at_gpu(2, 5, expert_input)
                             self.perf_stats['expert_compute'].append(time.time() - tick)
-                            print(f"专家占位3(使用代理专家): {(time.time() - tick)*1000:.2f}ms")
+                            
                             weights = routing_weights[mask].gather(
                                 1, (selected_experts[mask] == i_expert).long().argmax(dim=1, keepdim=True)
                             )
@@ -1000,7 +1000,7 @@ class FiddlerQwen:
                             self._async_ondemand(i_layer, i_expert, placeholder)
                             expert_output = placeholder(expert_input)
                             
-                            # 立即释放占位专家
+                            
                             if placeholder == self.expert_placeholder5:
                                 self.expert_placeholder5_inused = False
                             elif placeholder == self.expert_placeholder6:
@@ -1020,13 +1020,13 @@ class FiddlerQwen:
                             expert_output = expert_output * weights
                             mask_index = mask.nonzero().squeeze(1)
                             
-                            # 不需要锁，因为每个线程有自己的results列表
+                            
                             results.append((mask_index, expert_output))
                         
-                        # 为每个专家分配占位专家并启动线程
+                        
                         for i_expert in experts_remaining:
-                            # 等待直到有可用的占位专家                            
-                            # 分配占位专家
+                            
+                            
                             if not self.expert_placeholder5_inused:
                                 placeholder = self.expert_placeholder5
                                 self.expert_placeholder5_inused = True
@@ -1083,7 +1083,7 @@ class FiddlerQwen:
                             )
                             threads.append(t)
                             t.start()
-                        # 不需要等待所有线程完成，因为主线程会处理结果合并
+                        
                         return results
 
                     threads = []
@@ -1102,7 +1102,7 @@ class FiddlerQwen:
                         t.start()
                     for t in threads:
                         t.join()                        
-                    # 合并结果                         
+                    
                     for mask_index, expert_output in results:
                         inps_after_experts.index_add_(
                             0,
@@ -1119,18 +1119,18 @@ class FiddlerQwen:
                         mask = (selected_experts == i_expert).any(dim=1)
                         if not mask.any():
                             continue
-                        # 优化前：
-                        # expert_input = inps[mask].to("cpu")
-                        # pinned_inps = inps[mask].pin_memory()
+                        
+                        
+                        
                         expert_input = inps[mask].to("cpu", non_blocking=True)
                         torch.cuda.current_stream().synchronize()                            
-                        # expert_input = inps[mask].to("cpu")
+                        
                         tick = time.time()
                         expert_output = self.run_expert_at_cpu(i_layer, i_expert, expert_input ).to(self.dev)
                         self.perf_stats['expert_compute-cpu'].append(time.time() - tick)
-                        # weights = routing_weights[mask].gather(
-                        #     1, (selected_experts[mask] == i_expert).long().argmax(dim=1, keepdim=True)
-                        # ).to("cpu")                        
+                        
+                        
+                        
                         weights = routing_weights[mask].gather(
                             1, (selected_experts[mask] == i_expert).long().argmax(dim=1, keepdim=True)
                         )
@@ -1139,40 +1139,40 @@ class FiddlerQwen:
                         mask_index = mask.nonzero().squeeze(1)
                         cpu_results.append((mask_index, expert_output))
                     cpu_time = time.time() - start_time                        
-                # 启动并行的GPU和CPU处理线程
+                
 
                 def prefetch_experts():
-                    # with self.placeholder_lock:
-                    # """预取后续层的热点专家"""
+                    
+                    
                     hot_experts = self.hot_experts
-                    print("被调用")
-                    # 确定预取层数
+                    
+                    
                     if self.batch_size == 4:
                         self.prefetch_layers = i_layer + 1
                         expert_count = 1
                     elif self.batch_size == 8:
                         self.prefetch_layers = i_layer + 1
                         expert_count = 1
-                    else:  # batch_size == 30
+                    else:  
                         self.prefetch_layers = i_layer + 1
                         expert_count = 1
                         
-                    # 处理层数越界
+                    
                     if  self.prefetch_layers >= self.n_layer:
                         self.prefetch_layers =  self.prefetch_layers % self.n_layer
 
-                    # 获取当前层热点专家
+                    
                     layer_hot_experts = hot_experts.get( self.prefetch_layers , [])
                     layer_hot_experts_later = hot_experts.get(( self.prefetch_layers +1)%self.n_layer, [])
                     
                     if not layer_hot_experts:
-                        print("none层")
+                        
                         
                         return
                     self.prefetch_list[self.prefetch_layers]=[]
                     if self.prefetch_layers not in self.prefetching_list:
                         self.prefetching_list[self.prefetch_layers]=[]                        
-                    # 预取指定数量的热点专家
+                    
                     experts_loaded = 0
                     for i in range(min(expert_count, len(layer_hot_experts))):
                         expert_id = layer_hot_experts[i]
@@ -1184,32 +1184,32 @@ class FiddlerQwen:
                                 break
                         if not self.is_expert_in_gpu_now(self.prefetch_layers, expert_id) and expert_not_in_placeholder:
                             tick=time.time()
-                            # self._async_load_expert(self.prefetch_layers, expert_id)
+                            
 
                             self.prefetching_list[self.prefetch_layers].append(expert_id)
-                            time.sleep(0.0008)  # 27毫秒
+                            time.sleep(0.0008)  
                             self.prefetch_list[self.prefetch_layers].append(expert_id)
                             self.prefetching_list[self.prefetch_layers]=[]
-                            print(f"预取层 {self.prefetch_layers} 专家 {expert_id} 花费时间 {time.time()-tick}")
+                            
                             experts_loaded += 1
                             if experts_loaded >= expert_count:
                                 break
 
 
-            # 启动并行的GPU和CPU处理线程
-            # 启动预取线程（不阻塞）  # 设置为守护线程
+            
+            
                 parallel_start = time.time()
                 prefetch_thread = threading.Thread(target=prefetch_experts)
                 
                 
-                # 启动并行的GPU和CPU处理线程
+                
                 gpu_thread = threading.Thread(target=process_gpu_experts)
                 cpu_thread = threading.Thread(target=process_cpu_experts)
-                # if not self.is_decode and self.prefil_pre==True:
-                #     if self._prefetch_thread_started==False:
-                #         prefetch_thread.start()
-                #         self._prefetch_thread_started = True
-                #         self.prefil_pre=False                
+                
+                
+                
+                
+                
                 if self.is_decode and self.batch_size>16:
                     if self._prefetch_thread_started==False:
                         prefetch_thread.start()
@@ -1217,16 +1217,16 @@ class FiddlerQwen:
                 gpu_thread.start()
                 cpu_thread.start()
                 
-                # 只等待GPU和CPU线程完成
+                
                 gpu_thread.join()
                 cpu_thread.join()
                 parallel_time = time.time() - parallel_start
 
-                # 计算并行度
+                
                 max_thread_time = max(gpu_time, cpu_time)
                 parallel_degree = (gpu_time + cpu_time) / parallel_time if parallel_time > 0 else 1.0
 
-                # 打印时间统计
+                
                 if self.is_decode:
                     stats_text = f"\nLayer {i_layer} Thread Time Stats:\n"
                     stats_text += f"GPU Thread Time: {gpu_time*1000:.2f}ms\n"
@@ -1235,86 +1235,86 @@ class FiddlerQwen:
                     stats_text += f"Parallel Degree: {parallel_degree:.2f}x\n"
                     print(stats_text)
                     
-                    # 写入到临时日志文件
+                    
                     os.makedirs('./log', exist_ok=True)
                     with open('./log/linshi.txt', 'a') as f:
                         f.write(stats_text)
-                # 合并GPU处理结果
-                # for mask_index, expert_output in gpu_results:
-                #     inps_after_experts.index_add_(
-                #         0,
-                #         mask_index,
-                #         expert_output.to(inps_after_experts.dtype)
-                #     )
+                
+                
+                
+                
+                
+                
+                
 
-                # 合并CPU处理结果（需要移动到GPU）
+                
 
 
-            # addition because there's residual connection over moe layer
+            
             inps = inps_residual + inps_after_experts.reshape(batch_size, seq_len, hidden_dim)  
             if self.is_decode:
                 layer_time = time.time() - layer_tick
                 layer_time_final = time.time() - laypid
                 self.layer_time_accumulator[i_layer] += layer_time
-                # self.layer_time_accumulator_details[expert_case][i_layer] += layer_time
+                
                 
                 self.layer_time_stats.append({
                     'layer_id': i_layer,
                     'time': layer_time,
                     'token_step': self.past_key_values_length,
-                    # 'expert_case': expert_case  # 添加专家位置情况
+                    
                 })
                 
 
-            # end of one layer
+            
 
             if self.is_decode:
                 layer_time = time.time() - layer_tick
-                layer_times[i_layer] += layer_time  # 累计层时间
+                layer_times[i_layer] += layer_time  
                 layer_times_mid[i_layer] += laymid
                 layer_times_final[i_layer] += layer_time_final
                 self.layer_time_accumulator[i_layer] += layer_time
                 
-                # 记录到统计信息
+                
                 self.layer_time_stats.append({
                     'layer_id': i_layer,
                     'time': layer_time,
                     'token_step': self.past_key_values_length
                 })
         hot_experts = self.get_hot_expert()
-        # for layer_id in hot_experts:
-            # print(f"层 {layer_id} 热点专家: {hot_experts[layer_id][0]}")    
+        
+            
         if self.is_decode:
-            # 打印层时间统计
-            print("\n各层处理时间统计(ms):")
+            
+            
             for i in range(self.n_layer):
-                # cpu_time = self.cpu_expert_time_per_layer[i] * 1000
+                
                 layer_time = layer_times[i] * 1000
                 layer_times_mids = layer_times_mid[i] * 1000
                 layer_times_finals = layer_times_final[i] * 1000
-                # cpu_ratio = (cpu_time / layer_time * 100) if layer_time > 0 else 0
-                # print(f"层 {i}: {layer_time:.2f}ms (前向: {layer_times_fwd:.2f}ms, 后向: {layer_times_final.2f}ms)")
-                # cpu_ratio = (cpu_time / layer_time * 100) if layer_time > 0 else 0
+                
+                
+                
 
             
-            # 计算并打印平均层时间
+            
             avg_layer_time = sum(layer_times.values()) / self.n_layer
             total_cpu_time = sum(self.cpu_expert_time_per_layer.values())
             avg_cpu_ratio = (total_cpu_time / avg_layer_time * 100) if avg_layer_time > 0 else 0
-            # print(f"平均每层时间: {avg_layer_time*1000:.2f}ms (CPU专家平均占比: {avg_cpu_ratio:.1f}%)")
+            
             os.makedirs('./log', exist_ok=True)
             with open('./log/expert_stats.txt', 'a') as f:
-                f.write("\n各层处理时间统计(ms):\n")
+                
                 for i in range(self.n_layer):
                     cpu_time = self.cpu_expert_time_per_layer[i] * 1000
                     layer_time = layer_times[i] * 1000
                     layer_time_mids = layer_times_mid[i] * 1000
                     layer_time_finals = layer_times_final[i] * 1000
-                    # cpu_ratio = (cpu_time / layer_time * 100) if layer_time > 0 else 0
-                    f.write(f"层 {i}: {layer_time:.2f}ms (, 中间层: {layer_time_mids:.2f}ms, 最终层: {layer_time_finals:.2f}ms, %)\n")
-                    # f.write(f"层 {i}: {layer_time:.2f}ms (CPU专家: {cpu_time:.2f}ms, 占比: {cpu_ratio:.1f}%)\n")
+                    
+                    
+                    
                 
-                # f.write(f"平均每层时间: {avg_layer_time*1000:.2f}ms (CPU专家平均占比: {avg_cpu_ratio:.1f}%)\n")
+                
         other_ops_start = time.time()
 
         inps = self.model.norm(inps)
@@ -1323,23 +1323,23 @@ class FiddlerQwen:
         if self.is_decode:
             other_ops_time = time.time() - other_ops_start
             total_decode_time = time.time() - total_decode_start
-            print(f"\nToken处理时间统计:")
-            print(f"总时长: {total_decode_time*1000:.2f}ms")
-            print(f"  - {self.n_layer}层处理: {layer_total_time*1000:.2f}ms (平均每层: {layer_total_time*1000/self.n_layer:.2f}ms)")
-            print(f"  - 其他操作(norm+lm_head): {other_ops_time*1000:.2f}ms")
+            
+            
+            
+            
         self.present_key_value = present_key_value
         return lm_logis
 
-    # def run_expert_at_cpu(self, i_layer, i_expert, inps, routing_weights):
+    
         """Run the expert at CPU"""
-        # return self.model.layers[i_layer].mlp.experts[i_expert](
-        #     inps, routing_weights
-        # )
+        
+        
+        
     def run_expert_at_gpu(self, i_layer, i_expert, inps ):
         """Run the expert at GPU"""
         start_time = time.time()
         result = self.model.layers[i_layer].mlp.experts[i_expert](inps)
-        torch.cuda.synchronize()  # 确保当前操作完成
+        torch.cuda.synchronize()  
         elapsed = time.time() - start_time
         
         token_count = inps.shape[0]
@@ -1348,13 +1348,13 @@ class FiddlerQwen:
             expert_status = 'veryhot'
         elif token_count > 1:
             expert_status = 'hot'
-        # if self.is_decode:              
-        #     print(f"GPU专家处理 - 层 {i_layer} 专家 {i_expert}: "
-        #         f"处理 {token_count} tokens, 耗时 {elapsed*1000:.2f}ms, 状态 {expert_status}")
+        
+        
+        
         self.current_iter_expert_stats[i_layer]['expert_ids'].append(i_expert)
         self.current_iter_expert_stats[i_layer]['token_counts'].append(token_count)      
 
-        # 记录专家处理时间
+        
         self.expert_time_stats.append({
             'layer_id': i_layer,
             'expert_id': i_expert,
@@ -1369,7 +1369,7 @@ class FiddlerQwen:
         """Run the expert at CPU"""
         start_time = time.time()
         result = self.model.layers[i_layer].mlp.experts[i_expert](inps)
-        torch.cuda.synchronize()  # 确保当前操作完成
+        torch.cuda.synchronize()  
         elapsed = time.time() - start_time
         if self.is_decode:
             self.cpu_expert_time_per_layer[i_layer] += elapsed 
@@ -1379,13 +1379,13 @@ class FiddlerQwen:
             expert_status = 'veryhot'
         elif token_count > 1:
             expert_status = 'hot'
-        # if self.is_decode:            
-        #     print(f"CPU专家处理 - 层 {i_layer} 专家 {i_expert}: "
-        #         f"处理 {token_count} tokens, 耗时 {elapsed*1000:.2f}ms, 状态 {expert_status}")
+        
+        
+        
         self.current_iter_expert_stats[i_layer]['expert_ids'].append(i_expert)
         self.current_iter_expert_stats[i_layer]['token_counts'].append(token_count)
 
-        # 记录专家处理时间
+        
         self.expert_time_stats.append({
             'layer_id': i_layer,
             'expert_id': i_expert,
@@ -1396,27 +1396,27 @@ class FiddlerQwen:
         })
         return result
     def get_expert_stats(self):
-        """获取专家热度统计信息"""
+
         stats = {
             'hot_experts': {i: {'count': 0, 'hot': 0, 'veryhot': 0} for i in range(self.n_layer)},
             'hot_counts': {2: 0, 3: 0, 4: 0, 5: 0},
-            'token_distribution': {}  # 新增: token数量分布统计
+            'token_distribution': {}  
         }
         
-        # 按层统计hot/veryhot专家
+        
         for record in self.expert_time_stats:
             layer = record['layer_id']
             token_count = record['token_count']
             expert_status = record['status']
             
-            # 原有hot/veryhot统计
+            
             stats['hot_experts'][layer]['count'] += 1
             if expert_status == 'hot':
                 stats['hot_experts'][layer]['hot'] += 1
             elif expert_status == 'veryhot':
                 stats['hot_experts'][layer]['veryhot'] += 1
         
-        # 统计hot专家数量分布
+        
         layer_hot_counts = {i: 0 for i in range(self.n_layer)}
         for record in self.expert_time_stats:
             if record['status'] in ['hot', 'veryhot']:
@@ -1426,7 +1426,7 @@ class FiddlerQwen:
             if count >= 2 and count <= 5:
                 stats['hot_counts'][count] += 1
                 
-        # 重置token分布统计，只统计当前迭代
+        
         stats['token_distribution'] = {}
         token_counts = [r['token_count'] for r in self.expert_time_stats]
         unique_counts = set(token_counts)
